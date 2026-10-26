@@ -1,0 +1,36 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+*.db
+*.db-*
+*access_token*
+tokens/
+
+# Local bank data, reports, and legacy Plaid quickstart checkout.
+/quickstart/
+.fin/
+exports/
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.csv
+*.jsonl
+*.pdf
+transactions*.json
+*.pem
+*.key
+
+# Build and development artifacts.
+build/
+dist/
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+.DS_Store
+Thumbs.db

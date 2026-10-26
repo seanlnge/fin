@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fin-local"
+version = "0.1.0"
+description = "Local, read-only Plaid data for agents"
+readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{name = "Sean Lange"}]
+keywords = ["plaid", "personal-finance", "mcp", "claude", "sqlite"]
+requires-python = ">=3.12"
+dependencies = ["plaid-python>=46,<47", "typer>=0.27,<0.28", "python-dotenv>=1", "cryptography>=43", "keyring>=25"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+mcp = ["fastmcp>=4.1.3,<5"]
+
+[project.scripts]
+fin = "fin.cli:app"
+fin-mcp = "fin.mcp_server:main"
+
+[project.urls]
+Repository = "https://github.com/seanlnge/fin"
+Issues = "https://github.com/seanlnge/fin/issues"
+
+[tool.setuptools.packages.find]
+include = ["fin*"]
+
+[tool.setuptools.package-data]
+fin = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
