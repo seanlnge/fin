@@ -10,9 +10,6 @@ cloud-backed assistant still go to that assistant's model provider.
 
 <img width="937" height="582" alt="image" src="https://github.com/user-attachments/assets/89d77a1d-4d33-40b6-bd14-80e23fca196e" />
 
-**License:** [PolyForm Noncommercial 1.0.0](LICENSE). This is source-available
-software for permitted noncommercial use, not an OSI-approved open-source license.
-
 ## What It Does
 
 - Incrementally syncs transactions, reconciles pending charges, and records balance snapshots.
@@ -355,6 +352,8 @@ The legacy Plaid `quickstart/` checkout, local `.env`, virtual environment,
 databases, and exports are intentionally excluded from version control.
 
 ## License
+
+This is source-available software for permitted noncommercial use, not an OSI-approved open-source license.
 
 Copyright (c) 2026 Sean Lange. The code, skill, and documentation are provided
 under the [PolyForm Noncommercial License 1.0.0](LICENSE), with the required
