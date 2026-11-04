@@ -272,7 +272,7 @@ def _failure(conn, item_id, stamp, exc):
         conn.execute("INSERT INTO sync_log(item_id,started_at,error) VALUES(?,?,?)", (item_id, stamp, code))
     result = {"item_id": item_id, "status": status, "error": code}
     if status == "login_required":
-        result["action"] = f"fin link --update {item_id}"
+        result["action"] = f"fin link --update {item_id} (or MCP fin_link_start update={item_id})"
     return result
 
 

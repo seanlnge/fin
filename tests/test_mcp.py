@@ -22,15 +22,17 @@ def config(tmp_path):
         conn.execute("INSERT INTO accounts(account_id,item_id,name,type) VALUES('a','i','Checking','depository')")
         conn.execute("INSERT INTO transactions(transaction_id,account_id,date,amount,currency,name,category,pending) VALUES('t','a','2026-10-01',4.25,'USD','Coffee','FOOD_AND_DRINK',0)")
     conn.close()
-    return Config(path)
+    return Config(path, "test-client-id", "test-secret")
 
 
 def test_tool_discovery_and_safety_annotations(config):
     async def check():
         async with Client(create_server(config)) as client:
             tools = {tool.name: tool for tool in await client.list_tools()}
-            assert len(tools) == 12
-            assert not {"fin_link", "fin_import_item", "fin_export"} & tools.keys()
+            assert len(tools) == 14
+            assert not {"fin_import_item", "fin_export"} & tools.keys()
+            assert tools["fin_link_start"].annotations.open_world_hint is True
+            assert tools["fin_link_check"].input_schema["properties"]["wait_seconds"]["maximum"] == 60
             assert tools["fin_status"].annotations.read_only_hint is True
             assert tools["fin_sync"].annotations.read_only_hint is False
             assert tools["fin_live_balances"].annotations.open_world_hint is True
@@ -124,7 +126,93 @@ def test_stdio_handshake_from_unrelated_directory(config, tmp_path):
         keep_alive=False)
     async def check():
         async with Client(transport, timeout=30) as client:
-            assert len(await client.list_tools()) == 12
+            assert len(await client.list_tools()) == 14
             result = await client.call_tool("fin_status")
             assert result.data["data"][0]["institution"] == "Fixture Bank"
     asyncio.run(check())
+
+
+@pytest.fixture
+def link_env(config, monkeypatch):
+    from fin import link_server, mcp_server, plaid_client
+    from unittest.mock import Mock
+    client = Mock()
+    client.link_token_create.return_value = {"hosted_link_url": "https://secure.plaid.com/test", "link_token": "link-test"}
+    monkeypatch.setattr(plaid_client, "build_client", lambda config: client)
+    monkeypatch.setattr(link_server, "encrypt_token", lambda token: b"encrypted")
+    monkeypatch.setattr(mcp_server.webbrowser, "open", lambda url: True)
+    monkeypatch.setattr(mcp_server.time, "sleep", lambda seconds: None)
+    return client
+
+
+def test_link_start_then_check_links_without_exposing_token(config, link_env):
+    link_env.link_token_get.side_effect = [
+        {"link_sessions": [{"finished_at": None}]},
+        {"link_sessions": [{"finished_at": "now", "results": {"item_add_results": [
+            {"institution": {"institution_id": "ins_2", "name": "New Bank"}, "public_token": "public-test"}]}}]},
+    ]
+    link_env.item_public_token_exchange.return_value = {"item_id": "i2", "access_token": "access-production-PRIVATE"}
+    async def check():
+        async with Client(create_server(config)) as client:
+            started = await client.call_tool("fin_link_start")
+            assert started.data["status"] == "waiting_for_user"
+            assert started.data["browser_opened"] is True
+            assert started.data["already_linked"] == [{"institution": "Fixture Bank", "item_id": "i"}]
+            waiting = await client.call_tool("fin_link_check", {"wait_seconds": 0})
+            assert waiting.data["status"] == "waiting_for_user"
+            done = await client.call_tool("fin_link_check", {"wait_seconds": 0})
+            assert done.data["status"] == "linked"
+            assert "PRIVATE" not in json.dumps(done.data)
+            again = await client.call_tool("fin_link_check", raise_on_error=False)
+            assert again.is_error and "fin_link_start" in str(again.content)
+    asyncio.run(check())
+    conn = connect(config.db_path)
+    assert conn.execute("SELECT access_token FROM items WHERE item_id='i2'").fetchone()[0] == b"encrypted"
+    conn.close()
+
+
+def test_link_check_without_session_and_exit(config, link_env):
+    link_env.link_token_get.return_value = {"link_sessions": [{"finished_at": "now", "exit": {}}]}
+    async def check():
+        async with Client(create_server(config)) as client:
+            missing = await client.call_tool("fin_link_check", raise_on_error=False)
+            assert missing.is_error
+            await client.call_tool("fin_link_start")
+            exited = await client.call_tool("fin_link_check", {"wait_seconds": 0}, raise_on_error=False)
+            assert exited.is_error and "without confirmed completion" in str(exited.content)
+    asyncio.run(check())
+    link_env.item_public_token_exchange.assert_not_called()
+
+
+def test_missing_plaid_keys_gives_setup_instructions(tmp_path):
+    async def check():
+        async with Client(create_server(Config(tmp_path / "fin.db"))) as client:
+            result = await client.call_tool("fin_link_start", raise_on_error=False)
+            assert result.is_error and "settings in Claude Desktop" in str(result.content)
+    asyncio.run(check())
+
+
+def test_link_start_errors_are_sanitized(config, monkeypatch):
+    from fin import plaid_client
+    from unittest.mock import Mock
+    client = Mock()
+    client.link_token_create.side_effect = Exception("PLAID_SECRET=PRIVATE")
+    monkeypatch.setattr(plaid_client, "build_client", lambda config: client)
+    from fin import link_server
+    monkeypatch.setattr(link_server, "encrypt_token", lambda token: b"encrypted")
+    async def check():
+        async with Client(create_server(config)) as client:
+            result = await client.call_tool("fin_link_start", raise_on_error=False)
+            assert result.is_error and "PRIVATE" not in str(result.content)
+    asyncio.run(check())
+
+
+def test_no_dotenv_ignores_working_directory_env(tmp_path, monkeypatch):
+    from fin.config import load_config
+    (tmp_path / ".env").write_text("PLAID_CLIENT_ID=from-dotenv\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PLAID_CLIENT_ID", raising=False)
+    monkeypatch.setenv("PLAID_ENV", "")
+    config = load_config(dotenv=False)
+    assert config.client_id == ""
+    assert config.environment == "sandbox"

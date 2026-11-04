@@ -2,6 +2,8 @@
 import argparse
 import json
 import sqlite3
+import time
+import webbrowser
 from contextlib import closing
 from pathlib import Path
 from typing import Annotated, Literal
@@ -15,9 +17,13 @@ from fin.config import Config, load_config
 
 
 INSTRUCTIONS = """fin provides the user's local bank data. Call fin_sync(if_stale='6h')
-before answering financial questions, then use the narrowest query. Never link
-banks or request credentials: the user must use the fin CLI for link/import/reauth.
-For login_required, tell the user to run fin link --update ITEM. Inspect freshness,
+before answering financial questions, then use the narrowest query. If fin_status
+shows no banks, offer to link one. Before fin_link_start for a new bank, confirm
+the bank with the user and say that each new connection permanently uses one of
+the limited Plaid connection slots. The user signs in to their bank in the browser;
+never ask for bank logins, Plaid keys, or tokens in chat. After fin_link_start,
+call fin_link_check until it returns linked, then fin_sync. For login_required,
+use fin_link_start(update=ITEM). Inspect freshness,
 history_status, warnings, and truncation; incomplete data is not proof of zero.
 State currency and effective date range. Monetary query values are decimal
 strings: negative outflow, positive inflow. Balances keep native signs: positive
@@ -34,16 +40,29 @@ READ_ONLY = {"readOnlyHint": True, "destructiveHint": False,
              "idempotentHint": True, "openWorldHint": False}
 REFRESH = {"readOnlyHint": False, "destructiveHint": False,
            "idempotentHint": False, "openWorldHint": True}
+LINK = {"readOnlyHint": False, "destructiveHint": False,
+        "idempotentHint": False, "openWorldHint": True}
 Limit = Annotated[int, Field(ge=1, le=1000)]
+NO_BANKS = "No banks linked. Use fin_link_start to connect one, or run fin link in a terminal."
+MISSING_KEYS = ("Plaid Client ID and Secret are not configured. Add them in the fin extension's "
+                "settings in Claude Desktop (or the project .env), then restart Claude Desktop.")
+LINK_SESSION_SECONDS = 30 * 60
 
 
 def create_server(config: Config | None = None) -> FastMCP:
     config = config if config is not None else load_config()
     server = FastMCP("fin", instructions=INSTRUCTIONS, mask_error_details=True)
+    pending: dict = {}
+
+    def plaid_client():
+        from fin.plaid_client import build_client
+        if not config.client_id or not config.secret:
+            raise ToolError(MISSING_KEYS)
+        return build_client(config)
 
     def read(function, **kwargs):
         if not config.db_path.exists():
-            raise ToolError("No banks linked. Run fin link or fin import-item from the project terminal first.")
+            raise ToolError(NO_BANKS)
         try:
             with closing(db.connect(config.db_path, readonly=True)) as conn:
                 return function(conn, **kwargs)
@@ -55,15 +74,14 @@ def create_server(config: Config | None = None) -> FastMCP:
             raise ToolError("Local query failed; no internal details are exposed.") from None
 
     def refresh(*, live=False, item=None, if_stale=None):
-        from fin.plaid_client import build_client
         from fin.sync import live_balances, sync_items
         if not config.db_path.exists():
-            raise ToolError("No banks linked. Run fin link or fin import-item in the project terminal first.")
+            raise ToolError(NO_BANKS)
         try:
             with closing(db.connect(config.db_path)) as conn:
                 if not conn.execute("SELECT 1 FROM items LIMIT 1").fetchone():
-                    raise ToolError("No banks linked. Run fin link or fin import-item first.")
-                client = build_client(config)
+                    raise ToolError(NO_BANKS)
+                client = plaid_client()
                 result = live_balances(conn, client) if live else sync_items(conn, client, item_id=item, if_stale=if_stale)
             if any(row.get("status") in {"error", "login_required"} for row in result["items"]):
                 raise ToolError(json.dumps({**result, "code": "SYNC_FAILED"}))
@@ -78,7 +96,7 @@ def create_server(config: Config | None = None) -> FastMCP:
     def fin_status() -> dict:
         """List linked institutions, account counts, sync freshness, and history readiness."""
         if not config.db_path.exists():
-            return {"data": [], "message": "No banks linked. Run fin link or fin import-item in the project terminal."}
+            return {"data": [], "message": NO_BANKS}
         return read(queries.status)
 
     @server.tool(annotations=READ_ONLY)
@@ -157,6 +175,72 @@ def create_server(config: Config | None = None) -> FastMCP:
         """Fetch live bank balances and append snapshots. Rate-limited: use only at the user's explicit request."""
         return refresh(live=True)
 
+    @server.tool(annotations=LINK)
+    def fin_link_start(update: str | None = None) -> dict:
+        """Open Plaid Hosted Link in the user's browser to connect a bank, or repair one with update=ITEM_ID.
+
+        Confirm with the user first: each new bank connection permanently uses a limited Plaid slot.
+        Then call fin_link_check until it reports linked. Never asks for or returns credentials.
+        """
+        from fin.link_server import start_link
+        try:
+            with closing(db.connect(config.db_path)) as conn:
+                session = start_link(conn, plaid_client(), update=update)
+        except ToolError:
+            raise
+        except (ValueError, RuntimeError) as exc:
+            raise ToolError(str(exc)) from None
+        except Exception:
+            raise ToolError("Could not start Plaid Link; check Plaid keys, environment, and connectivity. No credentials are exposed.") from None
+        pending.clear()
+        pending.update(link_token=session["link_token"], update=update,
+                       expires=time.monotonic() + LINK_SESSION_SECONDS)
+        opened = False
+        try:
+            opened = bool(webbrowser.open(session["url"]))
+        except Exception:
+            pass
+        return {
+            "status": "waiting_for_user",
+            "browser_opened": opened,
+            "url": session["url"],
+            "already_linked": session["already_linked"],
+            "next": "Ask the user to finish signing in to their bank in the browser, then call fin_link_check.",
+        }
+
+    @server.tool(annotations=LINK)
+    def fin_link_check(wait_seconds: Annotated[int, Field(ge=0, le=60)] = 30) -> dict:
+        """Check the Plaid Link session started by fin_link_start, waiting up to wait_seconds.
+
+        Returns waiting_for_user, linked, or reauthenticated. On success, call fin_sync next.
+        """
+        from fin.link_server import poll_link
+        if not pending:
+            raise ToolError("No Link session in progress. Call fin_link_start first.")
+        if time.monotonic() > pending["expires"]:
+            pending.clear()
+            raise ToolError("The Link session expired. Call fin_link_start again.")
+        deadline = time.monotonic() + wait_seconds
+        try:
+            with closing(db.connect(config.db_path)) as conn:
+                client = plaid_client()
+                while True:
+                    result = poll_link(conn, client, pending["link_token"], update=pending["update"])
+                    if result is not None:
+                        pending.clear()
+                        return {**result, "next": "Call fin_sync to load transactions. Full history can take a few minutes."}
+                    if time.monotonic() >= deadline:
+                        return {"status": "waiting_for_user",
+                                "next": "The user has not finished in the browser yet. Call fin_link_check again."}
+                    time.sleep(3)
+        except ToolError:
+            raise
+        except (ValueError, RuntimeError) as exc:
+            pending.clear()
+            raise ToolError(str(exc)) from None
+        except Exception:
+            raise ToolError("Could not check Plaid Link; check connectivity. No credentials are exposed.") from None
+
     @server.resource("fin://schema")
     def schema() -> str:
         """SQLite schema. Access tokens and cursor columns may not be selected through fin_sql."""
@@ -168,8 +252,11 @@ def create_server(config: Config | None = None) -> FastMCP:
 def main():
     parser = argparse.ArgumentParser(description="Local fin MCP server for Claude Desktop (stdio only)")
     parser.add_argument("--env-file", type=Path, help="Explicit project .env path; contents are never printed")
+    parser.add_argument("--no-dotenv", action="store_true",
+                        help="Read configuration only from the process environment (used by the .mcpb bundle)")
     args = parser.parse_args()
-    create_server(load_config(args.env_file)).run(transport="stdio", show_banner=False, log_level="ERROR")
+    config = load_config(args.env_file, dotenv=not args.no_dotenv)
+    create_server(config).run(transport="stdio", show_banner=False, log_level="ERROR")
 
 
 if __name__ == "__main__":

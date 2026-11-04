@@ -15,10 +15,11 @@ class Config:
     redirect_uri: str | None = None
 
 
-def load_config(env_file: Path | None = None) -> Config:
+def load_config(env_file: Path | None = None, *, dotenv: bool = True) -> Config:
     base = env_file.resolve().parent if env_file is not None else Path.cwd()
-    load_dotenv(env_file if env_file is not None else base / ".env", override=False)
-    environment = os.getenv("PLAID_ENV", "sandbox").lower()
+    if dotenv:
+        load_dotenv(env_file if env_file is not None else base / ".env", override=False)
+    environment = (os.getenv("PLAID_ENV") or "sandbox").strip().lower()
     if environment not in {"sandbox", "production"}:
         raise ValueError("PLAID_ENV must be sandbox or production")
     default_path = "~/.fin/sandbox.db" if environment == "sandbox" else "~/.fin/fin.db"
