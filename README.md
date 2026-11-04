@@ -26,7 +26,7 @@ software for permitted noncommercial use, not an OSI-approved open-source licens
 ## Quick Start (No Terminal)
 
 1. Create a Plaid account at [dashboard.plaid.com](https://dashboard.plaid.com/signup) and choose the free Trial plan.
-2. In the Plaid Dashboard, open **Developers > Keys** and copy your **Client ID** and **Production** secret.
+2. Open [your Plaid API keys](https://dashboard.plaid.com/developers/keys) and copy your **Client ID** and **Production** secret.
 3. Download `fin-<version>.mcpb` from this repository's Releases and double-click it to install it in Claude Desktop.
 4. Paste the Client ID and secret into the extension's settings when Claude Desktop asks. The secret is stored in your OS keychain.
 5. In a new chat, ask Claude to **"connect my bank"**. Claude opens Plaid in your browser; you sign in to your bank there, not in chat.
@@ -285,7 +285,7 @@ accounting system. There are no money-movement endpoints. SQLite query connectio
 are read-only, and SQL authorization blocks access tokens and sync cursors.
 
 Access tokens are encrypted, but transaction data and balances are **not encrypted
-at rest**. Use OS/full-disk protection as appropriate. The database may contain
+at rest**. Turn on full-disk encryption (FileVault on macOS, BitLocker on Windows). The database may contain
 sensitive raw transaction and liability payloads. Exports are plaintext and are
 not sanitized for public sharing.
 
