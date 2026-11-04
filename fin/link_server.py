@@ -45,7 +45,7 @@ def finish_link(conn, client, result: dict) -> dict:
         # Serialize duplicate checking and exchange across separate CLI processes.
         conn.execute("BEGIN IMMEDIATE")
         if conn.execute("SELECT 1 FROM items WHERE institution_id = ?", (institution_id,)).fetchone():
-            raise ValueError("Institution already linked; use fin link --update ITEM instead")
+            raise ValueError("Institution already linked; repair it with fin link --update ITEM (MCP: fin_link_start update=ITEM) instead")
         # Verify the keychain before consuming a permanent production Item slot.
         encrypt_token("keychain-check")
         response = client.item_public_token_exchange(ItemPublicTokenExchangeRequest(public_token=result["public_token"]))
@@ -58,12 +58,14 @@ def finish_link(conn, client, result: dict) -> dict:
     return {"item_id": item_id, "institution": institution.get("name"), "status": "linked"}
 
 
-def link(conn, client, *, update=None, timeout=900) -> dict:
+def start_link(conn, client, *, update=None) -> dict:
+    """Create a Hosted Link session. Returns the link token and URL; nothing is exchanged yet."""
     kwargs = dict(
         client_name="fin local", language="en", country_codes=[CountryCode("US"), CountryCode("CA")],
         user=LinkTokenCreateRequestUser(client_user_id="fin-local-owner"),
         hosted_link=LinkTokenCreateHostedLink(),
     )
+    already_linked = []
     if update:
         item = conn.execute("SELECT access_token FROM items WHERE item_id=?", (update,)).fetchone()
         if not item:
@@ -72,48 +74,62 @@ def link(conn, client, *, update=None, timeout=900) -> dict:
         kwargs["additional_consented_products"] = [Products("liabilities")]
     else:
         encrypt_token("keychain-check")
-        existing = conn.execute("SELECT institution,item_id FROM items ORDER BY institution").fetchall()
-        for item in existing:
-            print(f"Already linked: {item['institution']}. Use fin link --update {item['item_id']} instead of linking it again.", file=sys.stderr)
+        already_linked = [dict(item) for item in conn.execute(
+            "SELECT institution,item_id FROM items ORDER BY institution").fetchall()]
         kwargs.update(
             products=[Products("transactions")],
             optional_products=[Products("liabilities")],
             transactions=LinkTokenTransactions(days_requested=730),
         )
     response = client.link_token_create(LinkTokenCreateRequest(**kwargs))
-    url = response["hosted_link_url"]
-    if not webbrowser.open(url):
+    return {"link_token": response["link_token"], "url": response["hosted_link_url"],
+            "already_linked": already_linked}
+
+
+def poll_link(conn, client, link_token: str, *, update=None) -> dict | None:
+    """Check a Hosted Link session once. Returns the result, None while pending, or raises on exit."""
+    payload = client.link_token_get(LinkTokenGetRequest(link_token=link_token))
+    payload = payload.to_dict() if hasattr(payload, "to_dict") else payload
+    sessions = payload.get("link_sessions") or []
+    for session in sessions:
+        if update:
+            # Modern Hosted Link sessions may omit the deprecated on_success.
+            # HANDOFF is Plaid's stable event for a successfully completed flow.
+            handoff = any(event.get("event_name") == "HANDOFF" for event in session.get("events") or [])
+            if session.get("on_success") is not None or handoff:
+                with conn:
+                    conn.execute("UPDATE items SET status='ok',last_synced_at=NULL,liabilities_synced_at=NULL WHERE item_id=?", (update,))
+                return {"item_id": update, "status": "reauthenticated",
+                        "confirmation": "HANDOFF" if handoff else "on_success"}
+        else:
+            results = (session.get("results") or {}).get("item_add_results") or []
+            if results:
+                return finish_link(conn, client, results[0])
+    # finished_at can arrive before the completion metadata. Only an explicit
+    # exit is a cancellation; allow active/resumed sessions to finish first.
+    if sessions and all(session.get("finished_at") for session in sessions):
+        latest = max(enumerate(sessions), key=lambda entry: (str(entry[1].get("started_at") or ""), entry[0]))[1]
+        exited = (
+            latest.get("exit") is not None or latest.get("on_exit") is not None
+            or any(event.get("event_name") == "EXIT" for event in latest.get("events") or [])
+        )
+        if exited:
+            raise ValueError("Link exited without confirmed completion. Permissions may already have changed; run fin sync to check.")
+    return None
+
+
+def link(conn, client, *, update=None, timeout=900) -> dict:
+    session = start_link(conn, client, update=update)
+    for item in session["already_linked"]:
+        print(f"Already linked: {item['institution']}. Use fin link --update {item['item_id']} instead of linking it again.", file=sys.stderr)
+    if not webbrowser.open(session["url"]):
         raise RuntimeError("Could not open the browser; run fin link from an interactive desktop")
     print("Complete Plaid Link in the browser. Waiting up to 15 minutes; Ctrl+C cancels.", file=sys.stderr)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        payload = client.link_token_get(LinkTokenGetRequest(link_token=response["link_token"]))
-        payload = payload.to_dict() if hasattr(payload, "to_dict") else payload
-        sessions = payload.get("link_sessions") or []
-        for session in sessions:
-            if update:
-                # Modern Hosted Link sessions may omit the deprecated on_success.
-                # HANDOFF is Plaid's stable event for a successfully completed flow.
-                handoff = any(event.get("event_name") == "HANDOFF" for event in session.get("events") or [])
-                if session.get("on_success") is not None or handoff:
-                    with conn:
-                        conn.execute("UPDATE items SET status='ok',last_synced_at=NULL,liabilities_synced_at=NULL WHERE item_id=?", (update,))
-                    return {"item_id": update, "status": "reauthenticated",
-                            "confirmation": "HANDOFF" if handoff else "on_success"}
-            else:
-                results = (session.get("results") or {}).get("item_add_results") or []
-                if results:
-                    return finish_link(conn, client, results[0])
-        # finished_at can arrive before the completion metadata. Only an explicit
-        # exit is a cancellation; allow active/resumed sessions to finish first.
-        if sessions and all(session.get("finished_at") for session in sessions):
-            latest = max(enumerate(sessions), key=lambda entry: (str(entry[1].get("started_at") or ""), entry[0]))[1]
-            exited = (
-                latest.get("exit") is not None or latest.get("on_exit") is not None
-                or any(event.get("event_name") == "EXIT" for event in latest.get("events") or [])
-            )
-            if exited:
-                raise ValueError("Link exited without confirmed completion. Permissions may already have changed; run fin sync to check.")
+        result = poll_link(conn, client, session["link_token"], update=update)
+        if result is not None:
+            return result
         time.sleep(3)
     if update:
         raise TimeoutError("Timed out waiting for Link completion metadata. Permissions may already have changed; run fin sync to check.")

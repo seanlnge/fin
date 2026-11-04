@@ -16,13 +16,26 @@ software for permitted noncommercial use, not an OSI-approved open-source licens
 - Incrementally syncs transactions, reconciles pending charges, and records balance snapshots.
 - Queries transactions, spending, cash flow, recurring streams, and supported credit/loan liabilities.
 - Separates currencies and returns most monetary query values as decimal strings.
-- Exposes 12 MCP tools over local stdio, with no listening port or remote deployment.
+- Exposes 14 MCP tools over local stdio, with no listening port or remote deployment.
+- Installs in Claude Desktop as a one-click `.mcpb` extension; Claude can walk you through linking a bank.
 - Encrypts access tokens using Fernet, with the key held by the OS keychain.
 - Supports existing Plaid Items without creating replacement connections.
 - Provides bounded, read-only SQL with access-token and cursor columns blocked.
 - Exports transactions to local CSV or JSON files on request.
 
-## Requirements
+## Quick Start (No Terminal)
+
+1. Create a Plaid account at [dashboard.plaid.com](https://dashboard.plaid.com/signup) and choose the free Trial plan.
+2. In the Plaid Dashboard, open **Developers > Keys** and copy your **Client ID** and **Production** secret.
+3. Download `fin-<version>.mcpb` from this repository's Releases and double-click it to install it in Claude Desktop.
+4. Paste the Client ID and secret into the extension's settings when Claude Desktop asks. The secret is stored in your OS keychain.
+5. In a new chat, ask Claude to **"connect my bank"**. Claude opens Plaid in your browser; you sign in to your bank there, not in chat.
+
+Claude Desktop installs Python and fin's dependencies automatically. The extension
+uses the same `~/.fin` database as the CLI. Each new bank connection permanently
+uses one of your Trial plan's 10 connection slots, so Claude confirms before linking.
+
+## Requirements (Source Install)
 
 - Python 3.12 or newer.
 - A Plaid account with access to the products and institutions you want to use.
@@ -243,10 +256,13 @@ the `fin://schema` resource without requiring a separate skill installation.
 - `fin_sql`: bounded, read-only SELECT queries with credential columns blocked.
 - `fin_sync`: refresh the cache, with a default freshness threshold of six hours.
 - `fin_live_balances`: explicitly requested live bank balances.
+- `fin_link_start`, `fin_link_check`: open Plaid Hosted Link in the browser to connect or repair a bank, then wait for the user to finish.
 
-MCP has no linking, token-import, file-export, or payment tools. Linking and import
-are manual terminal operations. Sync/live-balance tools update the local cache
-but never write to the bank. Stdio is the only supported server transport.
+Linking happens in the user's browser through Plaid Hosted Link; bank logins,
+Plaid keys, and access tokens never pass through the conversation. MCP has no
+token-import, file-export, or payment tools; `fin import-item` and `fin export`
+remain terminal operations. Sync/live-balance tools update the local cache but
+never write to the bank. Stdio is the only supported server transport.
 
 ### Optional Agent Skill
 
@@ -309,12 +325,24 @@ python -m pytest tests/test_sandbox.py -q
 That test creates and removes a synthetic Sandbox Item; it refuses Production.
 Do not opt into it against real bank credentials.
 
+### Building the Extension
+
+```bash
+uv lock
+python scripts/build_mcpb.py --validate
+```
+
+This writes `dist/fin-<version>.mcpb` containing only source, `pyproject.toml`,
+`uv.lock`, and license files. `--validate` checks the manifest with the official
+`@anthropic-ai/mcpb` CLI and needs Node. Attach the bundle to a GitHub Release.
+
 ### Repository Layout
 
 ```text
 fin/                 Python package: CLI, configuration, database, sync, MCP
 skill/SKILL.md       Reusable agent instructions for the MCP tools
-scripts/             Optional skill installer
+mcpb/manifest.json   Claude Desktop extension manifest (uv runtime)
+scripts/             Skill installer and .mcpb bundle builder
 tests/               Offline regressions and opt-in Sandbox smoke test
 docs/spec.md         Original design proposal, kept as historical context
 .github/workflows/   Offline test matrix

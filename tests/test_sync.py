@@ -264,7 +264,7 @@ def test_login_required_sanitized_and_other_items_continue(conn):
     client = client_for(error("ITEM_LOGIN_REQUIRED"), page())
     client.responses["accounts_get"] = deque([{"accounts": [account("b")]}])
     result = sync.sync_items(conn, client)
-    assert result["items"][0] == {"item_id": "i", "status": "login_required", "error": "ITEM_LOGIN_REQUIRED", "action": "fin link --update i"}
+    assert result["items"][0] == {"item_id": "i", "status": "login_required", "error": "ITEM_LOGIN_REQUIRED", "action": "fin link --update i (or MCP fin_link_start update=i)"}
     assert result["items"][1]["status"] == "ok"
     assert conn.execute("SELECT status FROM items WHERE item_id='i'").fetchone()[0] == "login_required"
     assert "secret" not in json.dumps(result)

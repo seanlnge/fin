@@ -1,0 +1,82 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "fin",
+  "display_name": "fin",
+  "version": "0.0.0",
+  "description": "Ask Claude about your bank balances, spending, subscriptions, and cash flow. Data stays on your computer.",
+  "long_description": "fin syncs your bank accounts through your own Plaid account into a local database on this computer, then lets Claude answer questions about balances, spending, recurring charges, credit cards, and cash flow.\n\n**Setup:** create a free Plaid account (Trial plan), copy your Client ID and Production secret from the Plaid Dashboard into this extension's settings, then ask Claude to \"connect my bank\". You sign in to your bank in the browser; Claude never sees your bank login.\n\nNo money movement and no bank-write endpoints. Access tokens are encrypted with a key in your OS keychain. Results you ask about are sent to Claude's model provider. Not affiliated with or endorsed by Plaid.",
+  "author": {
+    "name": "Sean Lange",
+    "url": "https://github.com/seanlnge"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/seanlnge/fin"
+  },
+  "homepage": "https://github.com/seanlnge/fin",
+  "support": "https://github.com/seanlnge/fin/issues",
+  "server": {
+    "type": "uv",
+    "entry_point": "fin/mcp_server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run", "--directory", "${__dirname}", "--frozen", "--extra", "mcp",
+        "python", "-m", "fin.mcp_server", "--no-dotenv"
+      ],
+      "env": {
+        "PLAID_CLIENT_ID": "${user_config.plaid_client_id}",
+        "PLAID_SECRET": "${user_config.plaid_secret}",
+        "PLAID_ENV": "${user_config.plaid_env}",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  },
+  "user_config": {
+    "plaid_client_id": {
+      "type": "string",
+      "title": "Plaid Client ID",
+      "description": "From the Plaid Dashboard: Developers > Keys.",
+      "required": true
+    },
+    "plaid_secret": {
+      "type": "string",
+      "title": "Plaid Secret",
+      "description": "The Production secret from Developers > Keys (or the Sandbox secret if Environment is sandbox). Stored in your OS keychain.",
+      "sensitive": true,
+      "required": true
+    },
+    "plaid_env": {
+      "type": "string",
+      "title": "Environment",
+      "description": "production for real bank accounts (including the free Trial plan), or sandbox for fake test data.",
+      "default": "production",
+      "required": false
+    }
+  },
+  "tools": [
+    {"name": "fin_status", "description": "Linked banks, sync freshness, and history readiness"},
+    {"name": "fin_link_start", "description": "Open Plaid in the browser to connect or repair a bank"},
+    {"name": "fin_link_check", "description": "Finish a bank connection started in the browser"},
+    {"name": "fin_sync", "description": "Refresh the local copy of bank data"},
+    {"name": "fin_accounts", "description": "Accounts and latest cached balances"},
+    {"name": "fin_balances", "description": "Cached balances and daily balance history"},
+    {"name": "fin_tx", "description": "Filtered transactions"},
+    {"name": "fin_search", "description": "Search transactions by merchant or description"},
+    {"name": "fin_spend", "description": "Spending by category, merchant, or account"},
+    {"name": "fin_cashflow", "description": "Money in, money out, and net by period"},
+    {"name": "fin_recurring", "description": "Subscriptions and recurring income"},
+    {"name": "fin_liabilities", "description": "Credit card and loan APRs, minimums, and due dates"},
+    {"name": "fin_sql", "description": "Read-only SQL over the local database"},
+    {"name": "fin_live_balances", "description": "Live balances straight from the bank"}
+  ],
+  "keywords": ["finance", "bank", "plaid", "budget", "spending", "local"],
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "compatibility": {
+    "platforms": ["darwin", "win32"],
+    "runtimes": {
+      "python": ">=3.12"
+    }
+  }
+}

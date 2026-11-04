@@ -14,8 +14,20 @@ The names below are the server's tool names. If Claude displays a server-qualifi
 1. Call `fin_sync` with `{"if_stale":"6h"}` before answering a financial question. Recently synced Items are skipped. Never force a refresh in a retry loop.
 2. Pick the narrowest query tool below. Read its structured JSON result, including `range`, `freshness`, `history_status`, and `truncated`, before interpreting the data.
 3. State the effective date range, currency, freshness, and material limitations. An empty result does not prove zero spending if history is still loading or a bank failed.
-4. For `login_required`, tell the user to run `fin link --update ITEM` in their project terminal. If no banks are linked, tell them to use `fin link` or `fin import-item`. These are manual setup instructions, not commands for you to execute. Never request credentials or access tokens in chat.
+4. If no banks are linked, follow **Linking a Bank** below. For `login_required`, call `fin_link_start` with `{"update":"ITEM_ID"}` and the same check loop. Never request bank logins, Plaid keys, or access tokens in chat.
 5. If sync fails, report the affected Items and warnings. You may answer from available cached data if you clearly disclose its freshness and incompleteness. Do not imply that every bank refreshed successfully.
+
+## Linking a Bank
+
+Use this when `fin_status` shows no banks, or the user asks to connect another one.
+
+1. Ask which bank to connect. If `fin_status` already lists it, do not link it again; offer `fin_link_start` with `update` instead.
+2. Tell the user, in one sentence, that each new bank connection permanently uses one of their Plaid account's limited connection slots (10 on the free Trial plan), and get a clear yes.
+3. Call `fin_link_start`. Tell the user to finish signing in to their bank in the browser tab that opened. If `browser_opened` is false, give them the returned `url` to open.
+4. Call `fin_link_check` with `{"wait_seconds":30}`. While it returns `waiting_for_user`, briefly tell the user you are still waiting and call it again. Stop after about 15 minutes of waiting and offer to start over.
+5. On `linked` or `reauthenticated`, call `fin_sync` with `{"if_stale":null}`. Full history can take several minutes to arrive from the bank; `history_status` shows progress.
+
+If a tool says the Plaid Client ID and Secret are not configured, tell the user to open Claude Desktop settings, find the fin extension, paste their Plaid keys from the Plaid Dashboard, and restart Claude Desktop. Do not ask for the keys in chat.
 
 ## MCP Tools
 
@@ -32,9 +44,11 @@ Each example identifies a tool and its JSON arguments. Invoke the actual tool, n
 - `fin_liabilities` with `{}`: supported card/loan APRs, minimum payments, and payment dates.
 - `fin_sql` with `{"query":"SELECT account_id, name, type, mask FROM accounts"}`: one read-only SELECT, bounded execution, at most 1,000 rows. Prefer built-in queries for monetary totals.
 - `fin_sync` with `{"if_stale":"6h"}`: refresh the local cache from Plaid, never write to the bank. Optional `item` restricts the refresh to an Item. `if_stale` accepts hours/days, such as `1h` or `1d`; JSON `null` forces a sync, only when intentionally needed.
+- `fin_link_start` with `{}`: open Plaid Hosted Link in the browser to connect a new bank. Pass `{"update":"ITEM_ID"}` to repair a connection that needs login. Confirm with the user first.
+- `fin_link_check` with `{"wait_seconds":30}`: wait for the browser sign-in started by `fin_link_start` to finish and store the connection.
 - `fin_live_balances` with `{}`: fetch live bank balances and append local snapshots. Rate-limited; call only when the user explicitly requests live balances.
 
-There are no MCP tools for linking banks, importing tokens, or exporting files. Do not invent tool names or use the CLI as a fallback. If a file export is requested, explain that it is a separate manual CLI operation.
+There are no MCP tools for importing tokens or exporting files. Do not invent tool names or use the CLI as a fallback. If a file export is requested, explain that it is a separate manual CLI operation.
 
 ## Interpretation
 

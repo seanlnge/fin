@@ -40,7 +40,25 @@ def test_documented_mcp_examples_match_tool_schemas(tmp_path):
         async with fastmcp.Client(create_server(Config(tmp_path / "unused.db"))) as client:
             tools = {tool.name: tool for tool in await client.list_tools()}
             assert {name for name, _ in examples} == set(tools)
-            assert len(examples) == 12
+            assert len(examples) == 14
             for name, arguments in examples:
                 validate(json.loads(arguments), tools[name].input_schema)
     asyncio.run(check())
+
+
+def test_mcpb_bundle_contains_only_source(tmp_path):
+    import zipfile
+    root = Path(__file__).resolve().parents[1]
+    if not (root / "uv.lock").exists():
+        pytest.skip("uv.lock not present")
+    result = subprocess.run([sys.executable, str(root / "scripts" / "build_mcpb.py"), "--out-dir", str(tmp_path)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    bundle = Path(json.loads(result.stdout)["bundle"])
+    names = set(zipfile.ZipFile(bundle).namelist())
+    assert {"manifest.json", "pyproject.toml", "uv.lock", "fin/mcp_server.py", "fin/schema.sql"} <= names
+    assert not {n for n in names if n.endswith((".env", ".db", ".pyc")) or n.startswith((".venv", "tests/"))}
+    manifest = json.loads(zipfile.ZipFile(bundle).read("manifest.json"))
+    assert manifest["server"]["type"] == "uv"
+    assert manifest["user_config"]["plaid_secret"]["sensitive"] is True
+    assert "--no-dotenv" in manifest["server"]["mcp_config"]["args"]
