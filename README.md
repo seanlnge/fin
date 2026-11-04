@@ -8,6 +8,8 @@ No hosted service, no money movement, no bank-write endpoints. The database and
 encrypted access tokens live on your machine. Financial results sent to a
 cloud-backed assistant still go to that assistant's model provider.
 
+<img width="937" height="582" alt="image" src="https://github.com/user-attachments/assets/89d77a1d-4d33-40b6-bd14-80e23fca196e" />
+
 **License:** [PolyForm Noncommercial 1.0.0](LICENSE). This is source-available
 software for permitted noncommercial use, not an OSI-approved open-source license.
 
